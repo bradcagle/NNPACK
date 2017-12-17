@@ -214,22 +214,22 @@ static pthread_once_t hwinfo_init_control = PTHREAD_ONCE_INIT;
 #if !(defined(__x86_64__) || defined(__i386__)) || defined(__ANDROID__)
 	static void init_static_hwinfo(void) {
 		nnp_hwinfo.cache.l1 = (struct cache_info) {
-			.size = 16 * 1024,
+			.size = 32 * 1024,
 			.associativity = 4,
 			.threads = 1,
 			.inclusive = true,
 		};
 		nnp_hwinfo.cache.l2 = (struct cache_info) {
-			.size = 128 * 1024,
-			.associativity = 4,
-			.threads = 1,
-			.inclusive = true,
+			.size = 480 * 1024,
+			.associativity = 16,
+			.threads = 4,
+			.inclusive = false,
 		};
 		nnp_hwinfo.cache.l3 = (struct cache_info) {
-			.size = 2 * 1024 * 1024,
-			.associativity = 8,
+			.size = 480 1024,
+			.associativity = 16,
 			.threads = 1,
-			.inclusive = true,
+			.inclusive = false,
 		};
 	}
 #endif

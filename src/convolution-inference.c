@@ -150,12 +150,12 @@ static void compute_output_transform(
 
 	const size_t tiles_block_start = fxdiv_round_down_size_t(tiles_subblock_start, tiles_block_max);
 	const size_t tiles_block_size = min(tiles_count - tiles_block_start, tiles_block_max.value);
-
 	float (*output)[output_size.height][output_size.width] =
 		(float(*)[output_size.height][output_size.width]) context->output;
 	const void* output_transform                  = context->output_transform;
 	const float* bias                             = context->bias;
 	nnp_transform_2d_with_bias transform_function = context->transform_function;
+	nnp_transform_2d_with_offset transform_function_nobias = context->transform_function;
 
 	for (size_t tiles_subblock_offset = 0; tiles_subblock_offset < tiles_subblock_size; tiles_subblock_offset += 1) {
 		const size_t tile = tiles_subblock_start + tiles_subblock_offset;
@@ -168,6 +168,7 @@ static void compute_output_transform(
 
 		for (size_t output_channels_subblock_offset = 0; output_channels_subblock_offset < output_channels_subblock_size; output_channels_subblock_offset += 1) {
 			const size_t output_channel = output_channels_subblock_start + output_channels_subblock_offset;
+			if (bias)
 			transform_function(
 				output_transform +
 					(tiles_block_start * output_channels + output_channels_subblock_start * tiles_block_size + ((tiles_subblock_start - tiles_block_start) + tiles_subblock_offset) * output_channels_subblock_size + output_channels_subblock_offset) * tuple_size,
@@ -177,6 +178,17 @@ static void compute_output_transform(
 				output_size.width,
 				min(output_tile.height, output_size.height - output_y),
 				min(output_tile.width, output_size.width - output_x));
+			else
+			transform_function_nobias(
+				output_transform +
+					(tiles_block_start * output_channels + output_channels_subblock_start * tiles_block_size + ((tiles_subblock_start - tiles_block_start) + tiles_subblock_offset) * output_channels_subblock_size + output_channels_subblock_offset) * tuple_size,
+				&output[output_channel][output_y][output_x],
+				tiles_count * output_channels * tuple_size,
+				output_size.width,
+				min(output_tile.height, output_size.height - output_y),
+				min(output_tile.width, output_size.width - output_x),
+				0,
+				0);
 		}
 	}
 }
@@ -536,6 +548,7 @@ static enum nnp_status compute_fast_convolution_inference(
 			}
 			if (workspace_buffer == NULL) {
 				if (workspace_size == NULL) {
+//					printf("fast_conv allocating %d bytes\n",memory_size);
 					memory_block = allocate_memory(memory_size);
 					if (memory_block == NULL) {
 						return nnp_status_out_of_memory;
@@ -546,6 +559,7 @@ static enum nnp_status compute_fast_convolution_inference(
 				}
 			} else {
 				if (*workspace_size < memory_size) {
+//					printf("not enough memory allocated in buffer, want %d bytes",memory_size);
 					return nnp_status_insufficient_buffer;
 				}
 				memory_block = workspace_buffer;
@@ -655,6 +669,7 @@ static enum nnp_status compute_fast_convolution_inference(
 				}
 				NNP_BLOCK_MULTIPLICATION_END(profile)
 			}
+
 			NNP_OUTPUT_TRANSFORM_START(profile)
 			struct output_transform_context output_transform_context = {
 				.transform_function = output_transform_function,
@@ -770,6 +785,7 @@ static enum nnp_status compute_gemm_convolution_inference(
 
 	if (workspace_buffer == NULL) {
 		if (workspace_size == NULL) {
+//			printf("gemm allocating %d bytes",memory_size);
 			memory_block = allocate_memory(memory_size);
 			if (memory_block == NULL) {
 				return nnp_status_out_of_memory;
@@ -780,6 +796,7 @@ static enum nnp_status compute_gemm_convolution_inference(
 		}
 	} else {
 		if (*workspace_size < memory_size) {
+//			printf("not enough memory allocated in buffer, want %d bytes",memory_size);
 			return nnp_status_insufficient_buffer;
 		}
 		memory_block = workspace_buffer;
@@ -858,29 +875,31 @@ static enum nnp_status compute_gemm_convolution_inference(
 		}
 	}
 	/* Add bias */
-	NNP_OUTPUT_TRANSFORM_START(profile)
-	switch (activation) {
-		case nnp_activation_identity:
-			for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
-				const float bias_value = bias[output_channel];
-				for (size_t index = 0; index < output_image_size; index += 1) {
-					output[output_channel * output_image_size + index] += bias_value;
+	if (bias) {
+		NNP_OUTPUT_TRANSFORM_START(profile)
+		switch (activation) {
+			case nnp_activation_identity:
+				for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
+					const float bias_value = bias[output_channel];
+					for (size_t index = 0; index < output_image_size; index += 1) {
+						output[output_channel * output_image_size + index] += bias_value;
+					}
 				}
-			}
-			break;
-		case nnp_activation_relu:
-			for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
-				const float bias_value = bias[output_channel];
-				for (size_t index = 0; index < output_image_size; index += 1) {
-					output[output_channel * output_image_size + index] =
-						relu(output[output_channel * output_image_size + index] + bias_value, 0.0f);
+				break;
+			case nnp_activation_relu:
+				for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
+					const float bias_value = bias[output_channel];
+					for (size_t index = 0; index < output_image_size; index += 1) {
+						output[output_channel * output_image_size + index] =
+							relu(output[output_channel * output_image_size + index] + bias_value, 0.0f);
+					}
 				}
-			}
-			break;
-		default:
-			NNP_UNREACHABLE;
+				break;
+			default:
+				NNP_UNREACHABLE;
+		}
+		NNP_OUTPUT_TRANSFORM_END(profile)
 	}
-	NNP_OUTPUT_TRANSFORM_END(profile)
 
 	if (memory_block != workspace_buffer) {
 		release_memory(memory_block, memory_size);
@@ -929,29 +948,31 @@ static enum nnp_status compute_direct_convolution_inference(
 	NNP_BLOCK_MULTIPLICATION_END(profile)
 
 	/* Add bias */
-	NNP_OUTPUT_TRANSFORM_START(profile)
-	switch (activation) {
-		case nnp_activation_identity:
-			for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
-				const float bias_value = bias[output_channel];
-				for (size_t index = 0; index < image_elements; index += 1) {
-					output[output_channel * image_elements + index] += bias_value;
+	if (bias) {
+		NNP_OUTPUT_TRANSFORM_START(profile)
+		switch (activation) {
+			case nnp_activation_identity:
+				for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
+					const float bias_value = bias[output_channel];
+					for (size_t index = 0; index < image_elements; index += 1) {
+						output[output_channel * image_elements + index] += bias_value;
+					}
 				}
-			}
-			break;
-		case nnp_activation_relu:
-			for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
-				const float bias_value = bias[output_channel];
-				for (size_t index = 0; index < image_elements; index += 1) {
-					output[output_channel * image_elements + index] =
-						relu(output[output_channel * image_elements + index] + bias_value, 0.0f);
+				break;
+			case nnp_activation_relu:
+				for (size_t output_channel = 0; output_channel < output_channels; output_channel += 1) {
+					const float bias_value = bias[output_channel];
+					for (size_t index = 0; index < image_elements; index += 1) {
+						output[output_channel * image_elements + index] =
+							relu(output[output_channel * image_elements + index] + bias_value, 0.0f);
+					}
 				}
-			}
-			break;
-		default:
-			NNP_UNREACHABLE;
+				break;
+			default:
+				NNP_UNREACHABLE;
+		}
+		NNP_OUTPUT_TRANSFORM_END(profile)
 	}
-	NNP_OUTPUT_TRANSFORM_END(profile)
 
 	return nnp_status_success;
 }
@@ -997,6 +1018,8 @@ enum nnp_status nnp_convolution_inference(
 		.height = (input_padding.top + input_size.height + input_padding.bottom - kernel_size.height) / output_subsampling.height + 1
 	};
 
+#define DISABLE_FT16x16
+
 	if (algorithm == nnp_convolution_algorithm_auto) {
 		if ((max(kernel_size.width, kernel_size.height) > 16) ||
 			(max(output_subsampling.width, output_subsampling.height) > 1))
@@ -1007,6 +1030,13 @@ enum nnp_status nnp_convolution_inference(
 		} else if (max(kernel_size.width, kernel_size.height) == 1) {
 			algorithm = nnp_convolution_algorithm_direct;
 		} else {
+#ifdef DISABLE_FT16x16
+			if ((kernel_size.height == 3) && (kernel_size.width == 3)) {
+				algorithm = nnp_convolution_algorithm_wt8x8;
+			} else {
+				algorithm = nnp_convolution_algorithm_ft8x8;
+			}
+#else
 			const size_t tile_count_8x8 =
 				divide_round_up(output_size.height, 8 - kernel_size.height + 1) *
 				divide_round_up(output_size.width, 8 - kernel_size.width + 1);
@@ -1023,8 +1053,16 @@ enum nnp_status nnp_convolution_inference(
 			} else {
 				algorithm = nnp_convolution_algorithm_ft16x16;
 			}
+#endif
 		}
 	}
+/*printf("nnp_convolution_inference: algorithm= ");
+if (algorithm==nnp_convolution_algorithm_implicit_gemm) puts("implicit-gemm");
+else if (algorithm==nnp_convolution_algorithm_ft16x16) puts("ft16x16");
+else if (algorithm==nnp_convolution_algorithm_ft8x8) puts("ft8x8");
+else if (algorithm==nnp_convolution_algorithm_direct) puts("direct");
+else if (algorithm==nnp_convolution_algorithm_wt8x8) puts("wt8x8");
+else puts("idk!");*/
 
 	struct nnp_size tile_size;
 	size_t transform_element_size;
@@ -1075,15 +1113,32 @@ enum nnp_status nnp_convolution_inference(
 
 			input_transform_function = nnp_hwinfo.transforms.iwt_f6x6_3x3_with_offset_and_stream;
 			kernel_transform_function = nnp_hwinfo.transforms.kwt_f6x6_3x3;
-			switch (activation) {
-				case nnp_activation_identity:
-					output_transform_function = nnp_hwinfo.transforms.owt_f6x6_3x3_with_bias;
-					break;
-				case nnp_activation_relu:
-					output_transform_function = nnp_hwinfo.transforms.owt_f6x6_3x3_with_bias_with_relu;
-					break;
-				default:
-					NNP_UNREACHABLE;
+			if (bias) {
+				switch (activation) {
+					case nnp_activation_identity:
+						output_transform_function = nnp_hwinfo.transforms.owt_f6x6_3x3_with_bias;
+						break;
+					case nnp_activation_relu:
+						output_transform_function = nnp_hwinfo.transforms.owt_f6x6_3x3_with_bias_with_relu;
+						break;
+					default:
+						NNP_UNREACHABLE;
+				}
+			}
+			else
+			{
+				switch (activation) {
+					case nnp_activation_identity:
+						output_transform_function = nnp_hwinfo.transforms.owt_f6x6_3x3;
+						break;
+					case nnp_activation_relu:
+						status=nnp_status_unsupported_algorithm;
+						goto cleanup;
+//						output_transform_function = nnp_hwinfo.transforms.owt_f6x6_3x3_with_bias_with_relu;
+						break;
+					default:
+						NNP_UNREACHABLE;
+				}
 			}
 			break;
 		case nnp_convolution_algorithm_ft8x8:
@@ -1093,15 +1148,32 @@ enum nnp_status nnp_convolution_inference(
 
 			input_transform_function = nnp_hwinfo.transforms.fft8x8_with_offset_and_stream;
 			kernel_transform_function = nnp_hwinfo.transforms.fft8x8_with_offset_and_stream;
-			switch (activation) {
-				case nnp_activation_identity:
-					output_transform_function = nnp_hwinfo.transforms.ifft8x8_with_bias;
-					break;
-				case nnp_activation_relu:
-					output_transform_function = nnp_hwinfo.transforms.ifft8x8_with_bias_with_relu;
-					break;
-				default:
-					NNP_UNREACHABLE;
+			if (bias) {
+				switch (activation) {
+					case nnp_activation_identity:
+						output_transform_function = nnp_hwinfo.transforms.ifft8x8_with_bias;
+						break;
+					case nnp_activation_relu:
+						output_transform_function = nnp_hwinfo.transforms.ifft8x8_with_bias_with_relu;
+						break;
+					default:
+						NNP_UNREACHABLE;
+				}
+			}
+			else
+			{
+				switch (activation) {
+					case nnp_activation_identity:
+						output_transform_function = nnp_hwinfo.transforms.ifft8x8_with_offset;
+						break;
+					case nnp_activation_relu:
+						status=nnp_status_unsupported_algorithm;
+						goto cleanup;
+//						output_transform_function = nnp_hwinfo.transforms.ifft8x8_with_bias_with_relu;
+						break;
+					default:
+						NNP_UNREACHABLE;
+				}
 			}
 			break;
 		case nnp_convolution_algorithm_ft16x16:
@@ -1111,15 +1183,32 @@ enum nnp_status nnp_convolution_inference(
 
 			input_transform_function = nnp_hwinfo.transforms.fft16x16_with_offset_and_stream;
 			kernel_transform_function = nnp_hwinfo.transforms.fft16x16_with_offset_and_stream;
-			switch (activation) {
-				case nnp_activation_identity:
-					output_transform_function = nnp_hwinfo.transforms.ifft16x16_with_bias;
-					break;
-				case nnp_activation_relu:
-					output_transform_function = nnp_hwinfo.transforms.ifft16x16_with_bias_with_relu;
-					break;
-				default:
-					NNP_UNREACHABLE;
+			if (bias) {
+				switch (activation) {
+					case nnp_activation_identity:
+						output_transform_function = nnp_hwinfo.transforms.ifft16x16_with_bias;
+						break;
+					case nnp_activation_relu:
+						output_transform_function = nnp_hwinfo.transforms.ifft16x16_with_bias_with_relu;
+						break;
+					default:
+						NNP_UNREACHABLE;
+				}
+			}
+			else
+			{
+				switch (activation) {
+					case nnp_activation_identity:
+						output_transform_function = nnp_hwinfo.transforms.ifft16x16_with_offset;
+						break;
+					case nnp_activation_relu:
+						status=nnp_status_unsupported_algorithm;
+						goto cleanup;
+//						output_transform_function = nnp_hwinfo.transforms.ifft16x16_with_bias_with_relu;
+						break;
+					default:
+						NNP_UNREACHABLE;
+				}
 			}
 			break;
 		case nnp_convolution_algorithm_implicit_gemm:
