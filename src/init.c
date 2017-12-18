@@ -226,7 +226,7 @@ static pthread_once_t hwinfo_init_control = PTHREAD_ONCE_INIT;
 			.inclusive = false,
 		};
 		nnp_hwinfo.cache.l3 = (struct cache_info) {
-			.size = 480 1024,
+			.size = (1024+480+512) * 1024,
 			.associativity = 16,
 			.threads = 1,
 			.inclusive = false,
