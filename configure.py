@@ -43,7 +43,7 @@ def main(args):
 
     with build.options(source_dir="src", macros=macros,
             deps={
-                (build.deps.pthreadpool, build.deps.fxdiv, build.deps.fp16): any,
+                (build.deps.pthreadpool, build.deps.cpuinfo, build.deps.fxdiv, build.deps.fp16): any,
                 build.deps.psimd: backend == "psimd" or backend == "arm",
             },
             extra_include_dirs={
@@ -173,6 +173,11 @@ def main(args):
                         build.cc("neon/blas/sdotxf.c"),
                         build.cc("psimd/blas/shdotxf.c"),
                     ]
+            if options.target.is_arm:
+                # Functions implemented in assembly
+                arch_nnpack_objects += [
+                    build.cc("neon/blas/sgemm-aarch32.S"),
+                ]
         elif backend == "psimd":
             arch_nnpack_objects = [
                 # Transformations
@@ -283,49 +288,52 @@ def main(args):
         build.static_library("nnpack", nnpack_objects)
 
     # Build tests for micro-kernels. Link to the micro-kernels implementations
-    with build.options(source_dir="test", extra_include_dirs="test", deps=build.deps.googletest.core):
+    with build.options(source_dir="test", extra_include_dirs="test", deps=[build.deps.googletest, build.deps.cpuinfo]):
 
         build.unittest("fourier-reference-test",
             reference_fft_objects + [build.cxx("fourier/reference.cc")])
 
         if backend == "x86_64":
-            build.smoketest("fourier-x86_64-avx2-test",
+            build.smoketest("fourier-test",
                 reference_fft_objects + arch_fft_stub_objects + [build.cxx("fourier/x86_64-avx2.cc")])
 
-            build.smoketest("winograd-x86_64-fma3-test",
+            build.smoketest("winograd-test",
                 arch_winograd_stub_objects + arch_nnpack_objects + [build.cxx("winograd/x86_64-fma3.cc")])
 
-            build.smoketest("sgemm-x86_64-fma3-test",
+            build.smoketest("sgemm-test",
                 arch_nnpack_objects + [build.cxx("sgemm/x86_64-fma3.cc")])
         elif backend == "psimd":
-            build.smoketest("fourier-psimd-test",
+            build.smoketest("fourier-test",
                 reference_fft_objects + arch_fft_stub_objects + [build.cxx("fourier/psimd.cc")])
 
-            build.smoketest("winograd-psimd-test",
+            build.smoketest("winograd-test",
                 arch_winograd_stub_objects + arch_nnpack_objects + [build.cxx("winograd/psimd.cc")])
 
-            build.smoketest("sgemm-psimd-test",
+            build.smoketest("sgemm-test",
                 arch_nnpack_objects + [build.cxx("sgemm/psimd.cc")])
         elif backend == "arm":
             # No ARM-specific Fourier implementation; use PSIMD
-            build.smoketest("fourier-psimd-test",
+            build.smoketest("fourier-test",
                 reference_fft_objects + arch_fft_stub_objects + [build.cxx("fourier/psimd.cc")])
 
-            build.smoketest("winograd-neon-test",
+            build.smoketest("winograd-test",
                 arch_winograd_stub_objects + arch_nnpack_objects + [build.cxx("winograd/neon.cc")])
+
+            build.smoketest("sgemm-test",
+                arch_nnpack_objects + [build.cxx("sgemm/neon.cc")])
         elif backend == "scalar":
-            build.smoketest("fourier-scalar-test",
+            build.smoketest("fourier-test",
                 reference_fft_objects + arch_fft_stub_objects + [build.cxx("fourier/scalar.cc")])
 
-            build.smoketest("winograd-scalar-test",
+            build.smoketest("winograd-test",
                 arch_winograd_stub_objects + arch_nnpack_objects + [build.cxx("winograd/scalar.cc")])
 
-            build.smoketest("sgemm-scalar-test",
+            build.smoketest("sgemm-test",
                 arch_nnpack_objects + [build.cxx("sgemm/scalar.cc")])
 
     # Build test for layers. Link to the library.
     with build.options(source_dir="test", include_dirs="test", deps={
-                (build, build.deps.pthreadpool, build.deps.googletest.core, build.deps.fp16): any,
+                (build, build.deps.pthreadpool, build.deps.cpuinfo, build.deps.googletest.core, build.deps.fp16): any,
                 "rt": build.target.is_linux
             }):
 
@@ -411,10 +419,17 @@ def main(args):
             build.unittest("softmax-output-imagenet-test",
                 reference_layer_objects + [build.cxx("softmax-output/imagenet.cc")])
 
+    # Build automatic benchmarks
+    with build.options(source_dir="bench", extra_include_dirs=["bench", "test"], macros=macros, deps={
+            (build, build.deps.pthreadpool, build.deps.cpuinfo, build.deps.googlebenchmark): all,
+            "rt": build.target.is_linux}):
+
+        build.benchmark("sgemm-bench", build.cxx("sgemm.cc"))
+
     # Build benchmarking utilities
-    if not options.inference_only:
-        with build.options(source_dir="bench", extra_include_dirs="bench", macros=export_macros, deps={
-                (build, build.deps.pthreadpool): all,
+    if not options.inference_only and not build.target.is_android:
+        with build.options(source_dir="bench", extra_include_dirs="bench", macros=macros, deps={
+                (build, build.deps.pthreadpool, build.deps.cpuinfo): all,
                 "rt": build.target.is_linux}):
 
             support_objects = [build.cc("median.c")]

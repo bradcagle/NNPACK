@@ -101,6 +101,14 @@ IF(NNPACK_BACKEND STREQUAL "x86-64")
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/peachpy-download")
 ENDIF()
 
+IF(NOT TARGET cpuinfo)
+  CONFIGURE_FILE(cmake/DownloadCpuinfo.cmake "${CMAKE_BINARY_DIR}/cpuinfo-download/CMakeLists.txt")
+  EXECUTE_PROCESS(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" .
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/cpuinfo-download")
+  EXECUTE_PROCESS(COMMAND "${CMAKE_COMMAND}" --build .
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/cpuinfo-download")
+ENDIF()
+
 IF(NOT TARGET fp16)
   CONFIGURE_FILE(cmake/DownloadFP16.cmake "${CMAKE_BINARY_DIR}/fp16-download/CMakeLists.txt")
   EXECUTE_PROCESS(COMMAND "${CMAKE_COMMAND}" -G "${CMAKE_GENERATOR}" .
@@ -252,6 +260,11 @@ ELSEIF(NNPACK_BACKEND STREQUAL "neon")
     src/neon/blas/conv1x1.c
     # BLAS microkernels
     src/neon/blas/sgemm.c)
+  IF(CMAKE_SYSTEM_PROCESSOR MATCHES "^(armv5te|armv7-a|armv7l)$")
+    LIST(APPEND NNPACK_BACKEND_SRCS
+      # BLAS microkernels
+      src/neon/blas/sgemm-aarch32.S)
+  ENDIF()
   IF(NOT NNPACK_CONVOLUTION_ONLY)
     LIST(APPEND NNPACK_BACKEND_SRCS
       # ReLU
@@ -376,6 +389,18 @@ SET_TARGET_PROPERTIES(nnpack PROPERTIES PUBLIC_HEADER include/nnpack.h)
 
 ADD_LIBRARY(nnpack_reference_layers ${NNPACK_REFERENCE_LAYERS_SRCS})
 TARGET_INCLUDE_DIRECTORIES(nnpack_reference_layers PUBLIC include)
+
+# ---[ Configure cpuinfo
+IF(NOT TARGET cpuinfo)
+  SET(CPUINFO_BUILD_TOOLS OFF CACHE BOOL "")
+  SET(CPUINFO_BUILD_UNIT_TESTS OFF CACHE BOOL "")
+  SET(CPUINFO_BUILD_MOCK_TESTS OFF CACHE BOOL "")
+  SET(CPUINFO_BUILD_BENCHMARKS OFF CACHE BOOL "")
+  ADD_SUBDIRECTORY(
+    "${CONFU_DEPENDENCIES_SOURCE_DIR}/cpuinfo"
+    "${CONFU_DEPENDENCIES_BINARY_DIR}/cpuinfo")
+ENDIF()
+TARGET_LINK_LIBRARIES(nnpack PRIVATE cpuinfo)
 
 # ---[ Configure pthreadpool
 IF(NOT TARGET pthreadpool)
