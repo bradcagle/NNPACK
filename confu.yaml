@@ -3,11 +3,11 @@ title: Neural Networks acceleration PACKage
 license: Simplified BSD
 deps:
   - name: pthreadpool
-    url:  https://github.com/Maratyszcza/pthreadpool.git
+    url:  https://github.com/bradcagle/pthreadpool.git
   - name: fxdiv
-    url:  https://github.com/Maratyszcza/FXdiv.git
+    url:  https://github.com/bradcagle/FXdiv.git
   - name: fp16
-    url:  https://github.com/Maratyszcza/FP16.git
+    url:  https://github.com/bradcagle/FP16.git
   - name: psimd
-    url:  https://github.com/Maratyszcza/psimd.git
+    url:  https://github.com/bradcagle/psimd.git
   - name: googletest
